@@ -1,0 +1,8 @@
+{
+  "name": "Book Designer",
+  "description": "Scribus-like book layout designer with professional page composition, margin options, grid alignment, custom graphics, and professional multi-page PDF generation.",
+  "requestFramePermissions": [],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}
