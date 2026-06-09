@@ -39,6 +39,7 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.data.BookPage
@@ -46,7 +47,12 @@ import com.example.data.BookProject
 import com.example.data.LayoutElement
 import com.example.pdf.DocxExporter
 import com.example.pdf.PdfExporter
+import com.example.api.FileSharer
 import com.example.ui.state.EditorViewModel
+import com.example.data.BookTextParser
+import androidx.compose.ui.viewinterop.AndroidView
+import android.webkit.WebView
+import android.webkit.WebViewClient
 import kotlinx.coroutines.launch
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -73,6 +79,46 @@ fun EditorScreen(
     var showAiAssistantDialog by remember { mutableStateOf(false) }
     var showPrintPreviewDialog by remember { mutableStateOf(false) }
     var showMarginSidebar by remember { mutableStateOf(false) }
+    var showExportMenu by remember { mutableStateOf(false) }
+    var showQrTransferDialog by remember { mutableStateOf(false) }
+    var isUploadingFile by remember { mutableStateOf(false) }
+    var fileUploadUrl by remember { mutableStateOf<String?>(null) }
+    var fileUploadError by remember { mutableStateOf<String?>(null) }
+    var uploadedFileName by remember { mutableStateOf("") }
+
+    var editorMode by remember { mutableStateOf("canvas") } // "canvas" or "html_flow"
+    var triggerFlowPdfExport by remember { mutableStateOf(false) }
+    var bookTextState by remember { mutableStateOf<String?>(null) }
+    var flowFontSizeSp by remember { mutableStateOf(16f) }
+    var flowLineHeight by remember { mutableStateOf(1.6f) }
+
+    LaunchedEffect(project?.id) {
+        val projId = project?.id ?: return@LaunchedEffect
+        try {
+            val file = java.io.File(context.filesDir, "book_text_edited_$projId.txt")
+            if (file.exists()) {
+                bookTextState = file.readText()
+            } else {
+                val inputStream = context.assets.open("cuando_todos_se_van.txt")
+                bookTextState = inputStream.bufferedReader().use { it.readText() }
+            }
+        } catch (e: Exception) {
+            e.printStackTrace()
+            bookTextState = "PRÓLOGO\n\nNo se pudo cargar el archivo cuando_todos_se_van.txt de los assets."
+        }
+    }
+
+    val onTextChanged: (String) -> Unit = { newText ->
+        bookTextState = newText
+        project?.id?.let { projId ->
+            try {
+                val file = java.io.File(context.filesDir, "book_text_edited_$projId.txt")
+                file.writeText(newText)
+            } catch (e: Exception) {
+                e.printStackTrace()
+            }
+        }
+    }
 
     if (project == null) {
         Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
@@ -162,68 +208,108 @@ fun EditorScreen(
                         )
                     }
 
-                    // Print Preview button
-                    Button(
-                        onClick = { showPrintPreviewDialog = true },
-                        colors = ButtonDefaults.buttonColors(
-                            containerColor = MaterialTheme.colorScheme.tertiaryContainer,
-                            contentColor = MaterialTheme.colorScheme.onTertiaryContainer
-                        ),
-                        modifier = Modifier
-                            .padding(end = 6.dp)
-                            .testTag("btn_print_preview")
-                    ) {
-                        Icon(
-                            imageVector = Icons.Default.Print,
-                            contentDescription = null,
-                            modifier = Modifier.size(18.dp)
-                        )
-                        Spacer(modifier = Modifier.width(6.dp))
-                        Text("Vista Previa", fontWeight = FontWeight.Bold)
-                    }
-
-                    // Export draft Word docx button
-                    Button(
-                        onClick = {
-                            DocxExporter.exportBookToDocx(context, activeProject, pages, share = true)
-                        },
-                        colors = ButtonDefaults.buttonColors(
-                            containerColor = MaterialTheme.colorScheme.secondaryContainer,
-                            contentColor = MaterialTheme.colorScheme.onSecondaryContainer
-                        ),
-                        modifier = Modifier
-                            .padding(end = 6.dp)
-                            .testTag("btn_export_docx")
-                    ) {
-                        Icon(
-                            imageVector = Icons.Default.Description,
-                            contentDescription = null,
-                            modifier = Modifier.size(18.dp)
-                        )
-                        Spacer(modifier = Modifier.width(6.dp))
-                        Text("Borrador Word (.docx)", fontWeight = FontWeight.Bold)
-                    }
-
-                    // Export professional PDF button
-                    Button(
-                        onClick = {
-                            PdfExporter.exportBookToPdf(context, activeProject, pages, share = true)
-                        },
-                        colors = ButtonDefaults.buttonColors(
-                            containerColor = MaterialTheme.colorScheme.primary,
-                            contentColor = MaterialTheme.colorScheme.onPrimary
-                        ),
-                        modifier = Modifier
-                            .padding(end = 8.dp)
-                            .testTag("btn_export_pdf")
-                    ) {
-                        Icon(
-                            imageVector = Icons.Default.PictureAsPdf,
-                            contentDescription = null,
-                            modifier = Modifier.size(18.dp)
-                        )
-                        Spacer(modifier = Modifier.width(6.dp))
-                        Text("Exportar PDF", fontWeight = FontWeight.Bold)
+                    // Export dropdown button
+                    Box {
+                        Button(
+                            onClick = { showExportMenu = true },
+                            colors = ButtonDefaults.buttonColors(
+                                containerColor = MaterialTheme.colorScheme.primary,
+                                contentColor = MaterialTheme.colorScheme.onPrimary
+                            ),
+                            modifier = Modifier
+                                .padding(end = 8.dp)
+                                .testTag("btn_export_menu")
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.Download,
+                                contentDescription = null,
+                                modifier = Modifier.size(18.dp)
+                            )
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text("Exportar", fontWeight = FontWeight.Bold)
+                            Spacer(modifier = Modifier.width(4.dp))
+                            Icon(
+                                imageVector = Icons.Default.ArrowDropDown,
+                                contentDescription = null,
+                                modifier = Modifier.size(18.dp)
+                            )
+                        }
+                        DropdownMenu(
+                            expanded = showExportMenu,
+                            onDismissRequest = { showExportMenu = false },
+                            modifier = Modifier.background(MaterialTheme.colorScheme.surface)
+                        ) {
+                            DropdownMenuItem(
+                                text = { Text("Vista Previa Impresión", fontWeight = FontWeight.Bold) },
+                                leadingIcon = { 
+                                    Icon(Icons.Default.Print, contentDescription = null, tint = MaterialTheme.colorScheme.tertiary) 
+                                },
+                                onClick = {
+                                    showExportMenu = false
+                                    showPrintPreviewDialog = true
+                                },
+                                modifier = Modifier.testTag("btn_print_preview")
+                            )
+                            DropdownMenuItem(
+                                text = { Text("Borrador Word (.docx)", fontWeight = FontWeight.Bold) },
+                                leadingIcon = { 
+                                    Icon(Icons.Default.Description, contentDescription = null, tint = MaterialTheme.colorScheme.secondary) 
+                                },
+                                onClick = {
+                                    showExportMenu = false
+                                    DocxExporter.exportBookToDocx(context, activeProject, pages, share = true)
+                                },
+                                modifier = Modifier.testTag("btn_export_docx")
+                            )
+                            DropdownMenuItem(
+                                text = { Text("Exportar PDF Profesional", fontWeight = FontWeight.Bold) },
+                                leadingIcon = { 
+                                    Icon(Icons.Default.PictureAsPdf, contentDescription = null, tint = MaterialTheme.colorScheme.primary) 
+                                },
+                                onClick = {
+                                    showExportMenu = false
+                                    if (editorMode == "html_flow") {
+                                        triggerFlowPdfExport = true
+                                    } else {
+                                        PdfExporter.exportBookToPdf(context, activeProject, pages, share = true)
+                                    }
+                                },
+                                modifier = Modifier.testTag("btn_export_pdf")
+                            )
+                            DropdownMenuItem(
+                                text = { Text("Transferir a Tablet / Móvil (QR)", fontWeight = FontWeight.Bold) },
+                                leadingIcon = { 
+                                    Icon(Icons.Default.TabletAndroid, contentDescription = null, tint = MaterialTheme.colorScheme.primary) 
+                                },
+                                onClick = {
+                                    showExportMenu = false
+                                    val projectVal = project
+                                    if (projectVal != null) {
+                                        val file = PdfExporter.exportBookToPdf(context, projectVal, pages, share = false)
+                                        if (file != null) {
+                                            uploadedFileName = file.name
+                                            showQrTransferDialog = true
+                                            isUploadingFile = true
+                                            fileUploadUrl = null
+                                            fileUploadError = null
+                                            scope.launch {
+                                                try {
+                                                    val url = FileSharer.uploadFile(file)
+                                                    fileUploadUrl = url
+                                                } catch (e: Exception) {
+                                                    fileUploadError = e.localizedMessage ?: "Error al subir el archivo"
+                                                } finally {
+                                                    isUploadingFile = false
+                                                }
+                                            }
+                                        } else {
+                                            Toast.makeText(context, "Error al generar el archivo para transferencia", Toast.LENGTH_SHORT).show()
+                                        }
+                                    }
+                                },
+                                modifier = Modifier.testTag("btn_export_qr")
+                            )
+                        }
                     }
                 },
                 colors = TopAppBarDefaults.topAppBarColors(
@@ -283,15 +369,15 @@ fun EditorScreen(
                                     Button(
                                         onClick = { viewModel.selectPage(index) },
                                         colors = ButtonDefaults.buttonColors(
-                                            containerColor = if (isSelected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.surfaceVariant,
-                                            contentColor = if (isSelected) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurfaceVariant
+                                            containerColor = if (isSelected) MaterialTheme.colorScheme.primary else Color(0xFFE2DCE5),
+                                            contentColor = if (isSelected) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.primary
                                         ),
                                         contentPadding = PaddingValues(horizontal = 12.dp, vertical = 2.dp),
                                         modifier = Modifier
                                             .height(32.dp)
                                             .testTag("btn_page_${index + 1}")
                                     ) {
-                                        Text("${index + 1}")
+                                        Text("${index + 1}", fontWeight = FontWeight.Bold)
                                     }
                                 }
                             }
@@ -391,80 +477,166 @@ fun EditorScreen(
                 .padding(innerPadding)
                 .background(Color(0xFFF3EDF7)) // Beautiful lavender workspace background!
         ) {
-            // Sribus workspace container (Row supporting split sidebar margin adjustments)
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .weight(0.55f)
+            TabRow(
+                selectedTabIndex = if (editorMode == "canvas") 0 else 1,
+                containerColor = Color(0xFFFDF8FD),
+                contentColor = MaterialTheme.colorScheme.primary,
+                modifier = Modifier.fillMaxWidth().testTag("editor_mode_tabs")
             ) {
-                Box(
-                    modifier = Modifier
-                        .weight(1f)
-                        .fillMaxHeight()
-                        .padding(8.dp),
-                    contentAlignment = Alignment.Center
-                ) {
-                    if (activePage != null) {
-                        ScribusCanvas(
-                            project = activeProject,
-                            page = activePage!!,
-                            selectedElementId = selectedElement?.id,
-                            onElementSelected = { viewModel.selectElement(it) },
-                            onElementMoved = { element, x, y, w, h ->
-                                viewModel.updateElementPositionAndSize(element.id, x, y, w, h)
-                            },
-                            onProjectUpdated = { updatedProj ->
-                                viewModel.updateProjectSettings(updatedProj)
-                            },
-                            onAddElementAt = { type, x, y ->
-                                viewModel.addElementToActivePageWithPosition(type, x, y)
-                            }
-                        )
-                    } else {
-                        Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                            Text("No hay páginas activas.", color = MaterialTheme.colorScheme.onBackground)
+                Tab(
+                    selected = editorMode == "canvas",
+                    onClick = { editorMode = "canvas" },
+                    text = { 
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Icon(Icons.Default.Dashboard, contentDescription = null, modifier = Modifier.size(18.dp))
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text("Editor Maquetación", fontWeight = FontWeight.Bold)
                         }
+                    },
+                    modifier = Modifier.testTag("tab_canvas_editor")
+                )
+                Tab(
+                    selected = editorMode == "html_flow",
+                    onClick = { editorMode = "html_flow" },
+                    text = { 
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Icon(Icons.Default.ChromeReaderMode, contentDescription = null, modifier = Modifier.size(18.dp))
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text("Flujo Columnas CSS", fontWeight = FontWeight.Bold)
+                        }
+                    },
+                    modifier = Modifier.testTag("tab_html_flow")
+                )
+            }
+
+            if (editorMode == "canvas") {
+                // Sribus workspace container (Row supporting split sidebar margin adjustments)
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .weight(0.55f)
+                ) {
+                    Box(
+                        modifier = Modifier
+                            .weight(1f)
+                            .fillMaxHeight()
+                            .padding(8.dp),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        if (activePage != null) {
+                            ScribusCanvas(
+                                project = activeProject,
+                                page = activePage!!,
+                                selectedElementId = selectedElement?.id,
+                                onElementSelected = { viewModel.selectElement(it) },
+                                onElementMoved = { element, x, y, w, h ->
+                                    viewModel.updateElementPositionAndSize(element.id, x, y, w, h)
+                                },
+                                onProjectUpdated = { updatedProj ->
+                                    viewModel.updateProjectSettings(updatedProj)
+                                },
+                                onAddElementAt = { type, x, y ->
+                                    viewModel.addElementToActivePageWithPosition(type, x, y)
+                                }
+                            )
+
+                            // Dynamic floating page counter at the bottom center of the active layout view
+                            androidx.compose.material3.Card(
+                                modifier = Modifier
+                                    .align(Alignment.BottomCenter)
+                                    .padding(bottom = 12.dp)
+                                    .testTag("canvas_page_counter_badge"),
+                                colors = androidx.compose.material3.CardDefaults.cardColors(
+                                    containerColor = Color(0xFFFAF7F2).copy(alpha = 0.95f),
+                                    contentColor = MaterialTheme.colorScheme.primary
+                                ),
+                                elevation = androidx.compose.material3.CardDefaults.cardElevation(defaultElevation = 6.dp),
+                                shape = RoundedCornerShape(12.dp),
+                                border = androidx.compose.foundation.BorderStroke(1.dp, Color(0xFFC4B29E).copy(alpha = 0.6f))
+                            ) {
+                                Row(
+                                    modifier = Modifier.padding(horizontal = 14.dp, vertical = 6.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.Center
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Default.Book,
+                                        contentDescription = null,
+                                        tint = Color(0xFFC4B29E),
+                                        modifier = Modifier.size(16.dp)
+                                    )
+                                    Spacer(modifier = Modifier.width(8.dp))
+                                    Text(
+                                        text = "PÁGINA ${activePageIndex + 1} DE ${pages.size}",
+                                        style = MaterialTheme.typography.labelLarge.copy(
+                                            fontFamily = FontFamily.Monospace,
+                                            fontWeight = FontWeight.Bold,
+                                            color = MaterialTheme.colorScheme.primary
+                                        ),
+                                        modifier = Modifier.testTag("canvas_page_indicator_text")
+                                    )
+                                }
+                            }
+                        } else {
+                            Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                                Text("No hay páginas activas.", color = MaterialTheme.colorScheme.onBackground)
+                            }
+                        }
+                    }
+
+                    // Smoothly animated modern margin adjusters sidebar
+                    AnimatedVisibility(
+                        visible = showMarginSidebar,
+                        enter = slideInHorizontally(initialOffsetX = { it }) + fadeIn(),
+                        exit = slideOutHorizontally(targetOffsetX = { it }) + fadeOut()
+                    ) {
+                        MarginSidebarPanel(
+                            project = activeProject,
+                            viewModel = viewModel,
+                            onUpdateProject = { viewModel.updateProjectSettings(it) },
+                            onClose = { showMarginSidebar = false }
+                        )
                     }
                 }
 
-                // Smoothly animated modern margin adjusters sidebar
-                AnimatedVisibility(
-                    visible = showMarginSidebar,
-                    enter = slideInHorizontally(initialOffsetX = { it }) + fadeIn(),
-                    exit = slideOutHorizontally(targetOffsetX = { it }) + fadeOut()
+                // Element settings and coordinates drawer list
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .weight(0.45f)
+                        .background(Color(0xDDFDF8FD)) // Frosted glass soft lavender cream container
+                        .border(1.dp, Color.White.copy(alpha = 0.45f))
                 ) {
-                    MarginSidebarPanel(
-                        project = activeProject,
-                        viewModel = viewModel,
-                        onUpdateProject = { viewModel.updateProjectSettings(it) },
-                        onClose = { showMarginSidebar = false }
-                    )
+                    if (selectedElement != null) {
+                        ElementPropertiesTray(
+                            element = selectedElement!!,
+                            project = activeProject,
+                            onUpdate = { viewModel.updateElementInActivePage(it) },
+                            onDelete = { viewModel.removeSelectedElement() },
+                            onMoveLayer = { viewModel.changeElementZIndex(it) },
+                            onTriggerAiHelper = { showAiAssistantDialog = true }
+                        )
+                    } else {
+                        EmptyTrayView(
+                            project = activeProject,
+                            onUpdateProject = { viewModel.updateProjectSettings(it) }
+                        )
+                    }
                 }
-            }
-
-            // Element settings and coordinates drawer list
-            Box(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .weight(0.45f)
-                    .background(Color(0xDDFDF8FD)) // Frosted glass soft lavender cream container
-                    .border(1.dp, Color.White.copy(alpha = 0.45f))
-            ) {
-                if (selectedElement != null) {
-                    ElementPropertiesTray(
-                        element = selectedElement!!,
-                        project = activeProject,
-                        onUpdate = { viewModel.updateElementInActivePage(it) },
-                        onDelete = { viewModel.removeSelectedElement() },
-                        onMoveLayer = { viewModel.changeElementZIndex(it) },
-                        onTriggerAiHelper = { showAiAssistantDialog = true }
-                    )
-                } else {
-                    EmptyTrayView(
-                        project = activeProject,
-                        onUpdateProject = { viewModel.updateProjectSettings(it) }
-                    )
-                }
+            } else {
+                CssColumnFlowWorkspace(
+                    rawText = bookTextState ?: "",
+                    project = activeProject,
+                    flowFontSizeSp = flowFontSizeSp,
+                    flowLineHeight = flowLineHeight,
+                    onFontSizeChange = { flowFontSizeSp = it },
+                    onLineHeightChange = { flowLineHeight = it },
+                    onUpdateProject = { viewModel.updateProjectSettings(it) },
+                    onTextChanged = onTextChanged,
+                    triggerPdfExport = triggerFlowPdfExport,
+                    onPdfExportedHandled = { triggerFlowPdfExport = false },
+                    modifier = Modifier.fillMaxSize().weight(1f)
+                )
             }
         }
 
@@ -487,6 +659,37 @@ fun EditorScreen(
                 pages = pages,
                 initialPageIndex = activePageIndex,
                 onDismiss = { showPrintPreviewDialog = false }
+            )
+        }
+
+        if (showQrTransferDialog) {
+            QrTransferDialog(
+                fileName = uploadedFileName,
+                isLoading = isUploadingFile,
+                downloadUrl = fileUploadUrl,
+                error = fileUploadError,
+                onDismiss = { showQrTransferDialog = false },
+                onRetry = {
+                    val projectVal = project
+                    if (projectVal != null) {
+                        val file = PdfExporter.exportBookToPdf(context, projectVal, pages, share = false)
+                        if (file != null) {
+                            isUploadingFile = true
+                            fileUploadUrl = null
+                            fileUploadError = null
+                            scope.launch {
+                                try {
+                                    val url = FileSharer.uploadFile(file)
+                                    fileUploadUrl = url
+                                } catch (e: java.lang.Exception) {
+                                    fileUploadError = e.localizedMessage ?: "Error al subir el archivo"
+                                } finally {
+                                    isUploadingFile = false
+                                }
+                            }
+                        }
+                    }
+                }
             )
         }
     }
@@ -1760,14 +1963,14 @@ fun ElementPropertiesTray(
                             containerColor = MaterialTheme.colorScheme.tertiary,
                             contentColor = MaterialTheme.colorScheme.onTertiary
                         ),
-                        contentPadding = PaddingValues(horizontal = 10.dp, vertical = 2.dp),
+                        contentPadding = PaddingValues(horizontal = 12.dp, vertical = 4.dp),
                         modifier = Modifier
-                            .height(30.dp)
+                            .height(36.dp)
                             .testTag("btn_trigger_ai")
                     ) {
-                        Icon(Icons.Default.AutoAwesome, contentDescription = null, modifier = Modifier.size(14.dp))
-                        Spacer(modifier = Modifier.width(4.dp))
-                        Text("Sugerir con IA", fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                        Icon(Icons.Default.AutoAwesome, contentDescription = null, modifier = Modifier.size(16.dp))
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text("Sugerir con IA", fontSize = 13.sp, fontWeight = FontWeight.Bold)
                     }
                 }
 
@@ -1914,7 +2117,7 @@ fun ElementPropertiesTray(
 
                 if (project.a5TextLimitEnabled) {
                     Spacer(modifier = Modifier.height(10.dp))
-                    Button(
+                    OutlinedButton(
                         onClick = {
                             val targetW = project.a5TextLimitWidthMm
                             val targetX = ((project.pageWidthMm - targetW) / 2f).coerceAtLeast(0f)
@@ -1923,10 +2126,10 @@ fun ElementPropertiesTray(
                                 widthMm = targetW
                             ))
                         },
-                        colors = ButtonDefaults.buttonColors(
-                            containerColor = MaterialTheme.colorScheme.tertiary.copy(alpha = 0.15f),
+                        colors = ButtonDefaults.outlinedButtonColors(
                             contentColor = MaterialTheme.colorScheme.tertiary
                         ),
+                        border = androidx.compose.foundation.BorderStroke(1.dp, MaterialTheme.colorScheme.tertiary),
                         modifier = Modifier
                             .fillMaxWidth()
                             .testTag("btn_a5_fit_text_11cm")
@@ -1934,12 +2137,13 @@ fun ElementPropertiesTray(
                         Icon(
                             imageVector = Icons.Default.AspectRatio,
                             contentDescription = null,
-                            modifier = Modifier.size(16.dp)
+                            modifier = Modifier.size(16.dp),
+                            tint = MaterialTheme.colorScheme.tertiary
                         )
                         Spacer(modifier = Modifier.width(6.dp))
                         Text(
                             text = "Ajustar texto a 11 cm y Centrar",
-                            fontSize = 12.sp,
+                            fontSize = 13.sp,
                             fontWeight = FontWeight.Bold
                         )
                     }
@@ -2063,13 +2267,13 @@ fun ElementPropertiesTray(
                         onClick = { launcher.launch("image/*") },
                         modifier = Modifier.weight(1f).testTag("btn_select_gallery_image"),
                         colors = ButtonDefaults.buttonColors(
-                            containerColor = MaterialTheme.colorScheme.primaryContainer,
-                            contentColor = MaterialTheme.colorScheme.onPrimaryContainer
+                            containerColor = MaterialTheme.colorScheme.primary,
+                            contentColor = MaterialTheme.colorScheme.onPrimary
                         )
                     ) {
                         Icon(Icons.Default.Image, contentDescription = null, modifier = Modifier.size(16.dp))
                         Spacer(modifier = Modifier.width(4.dp))
-                        Text("Galería", fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                        Text("Galería", fontSize = 13.sp, fontWeight = FontWeight.Bold)
                     }
 
                     if (element.imageUrl.isNotEmpty() && !element.isPlaceholder) {
@@ -2084,13 +2288,13 @@ fun ElementPropertiesTray(
                             },
                             modifier = Modifier.weight(1f).testTag("btn_remove_gallery_image"),
                             colors = ButtonDefaults.buttonColors(
-                                containerColor = MaterialTheme.colorScheme.errorContainer,
-                                contentColor = MaterialTheme.colorScheme.onErrorContainer
+                                containerColor = MaterialTheme.colorScheme.error,
+                                contentColor = MaterialTheme.colorScheme.onError
                             )
                         ) {
                             Icon(Icons.Default.Delete, contentDescription = null, modifier = Modifier.size(16.dp))
                             Spacer(modifier = Modifier.width(4.dp))
-                            Text("Quitar", fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                            Text("Quitar", fontSize = 13.sp, fontWeight = FontWeight.Bold)
                         }
                     }
                 }
@@ -3391,7 +3595,7 @@ fun MarginSidebarPanel(
 
             // Margin Controls
             MarginAdjusterItem(
-                label = "Margo Izquierdo",
+                label = "Margen Izquierdo",
                 value = project.marginMmLeft,
                 onValueChange = { onUpdateProject(project.copy(marginMmLeft = it)) }
             )
@@ -3399,7 +3603,7 @@ fun MarginSidebarPanel(
             Spacer(modifier = Modifier.height(12.dp))
 
             MarginAdjusterItem(
-                label = "Margo Derecho",
+                label = "Margen Derecho",
                 value = project.marginMmRight,
                 onValueChange = { onUpdateProject(project.copy(marginMmRight = it)) }
             )
@@ -3407,7 +3611,7 @@ fun MarginSidebarPanel(
             Spacer(modifier = Modifier.height(12.dp))
 
             MarginAdjusterItem(
-                label = "Margo Superior",
+                label = "Margen Superior",
                 value = project.marginMmTop,
                 onValueChange = { onUpdateProject(project.copy(marginMmTop = it)) }
             )
@@ -3415,9 +3619,54 @@ fun MarginSidebarPanel(
             Spacer(modifier = Modifier.height(12.dp))
 
             MarginAdjusterItem(
-                label = "Margo Inferior",
+                label = "Margen Inferior",
                 value = project.marginMmBottom,
                 onValueChange = { onUpdateProject(project.copy(marginMmBottom = it)) }
+            )
+
+            Spacer(modifier = Modifier.height(16.dp))
+
+            HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.3f))
+
+            Spacer(modifier = Modifier.height(12.dp))
+
+            Text(
+                text = "Relleno de Contenedor",
+                style = MaterialTheme.typography.labelMedium,
+                fontWeight = FontWeight.Bold,
+                color = MaterialTheme.colorScheme.primary
+            )
+
+            Spacer(modifier = Modifier.height(12.dp))
+
+            MarginAdjusterItem(
+                label = "Relleno Izquierdo",
+                value = project.paddingMmLeft,
+                onValueChange = { onUpdateProject(project.copy(paddingMmLeft = it)) }
+            )
+
+            Spacer(modifier = Modifier.height(12.dp))
+
+            MarginAdjusterItem(
+                label = "Relleno Derecho",
+                value = project.paddingMmRight,
+                onValueChange = { onUpdateProject(project.copy(paddingMmRight = it)) }
+            )
+
+            Spacer(modifier = Modifier.height(12.dp))
+
+            MarginAdjusterItem(
+                label = "Relleno Superior",
+                value = project.paddingMmTop,
+                onValueChange = { onUpdateProject(project.copy(paddingMmTop = it)) }
+            )
+
+            Spacer(modifier = Modifier.height(12.dp))
+
+            MarginAdjusterItem(
+                label = "Relleno Inferior",
+                value = project.paddingMmBottom,
+                onValueChange = { onUpdateProject(project.copy(paddingMmBottom = it)) }
             )
 
             Spacer(modifier = Modifier.height(20.dp))
@@ -3976,28 +4225,31 @@ fun MarginSidebarPanel(
                     },
                     modifier = Modifier.weight(1f).testTag("btn_manual_auto_save"),
                     colors = ButtonDefaults.buttonColors(
-                        containerColor = MaterialTheme.colorScheme.primaryContainer,
-                        contentColor = MaterialTheme.colorScheme.onPrimaryContainer
+                        containerColor = MaterialTheme.colorScheme.primary,
+                        contentColor = MaterialTheme.colorScheme.onPrimary
                     ),
-                    contentPadding = PaddingValues(horizontal = 4.dp, vertical = 2.dp)
+                    contentPadding = PaddingValues(horizontal = 4.dp, vertical = 6.dp)
                 ) {
-                    Text("Auto-guardar", fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                    Text("Auto-guardar", fontSize = 13.sp, fontWeight = FontWeight.Bold)
                 }
 
                 // Restore backup button
-                Button(
+                OutlinedButton(
                     onClick = {
                         viewModel.restoreLastAutoSaved(project.id)
                     },
                     modifier = Modifier.weight(1f).testTag("btn_restore_auto_save"),
-                    colors = ButtonDefaults.buttonColors(
-                        containerColor = MaterialTheme.colorScheme.tertiaryContainer,
-                        contentColor = MaterialTheme.colorScheme.onTertiaryContainer
+                    colors = ButtonDefaults.outlinedButtonColors(
+                        contentColor = MaterialTheme.colorScheme.tertiary
+                    ),
+                    border = androidx.compose.foundation.BorderStroke(
+                        1.dp, 
+                        if (lastSaved != null) MaterialTheme.colorScheme.tertiary else MaterialTheme.colorScheme.outline.copy(alpha = 0.38f)
                     ),
                     enabled = lastSaved != null,
-                    contentPadding = PaddingValues(horizontal = 4.dp, vertical = 2.dp)
+                    contentPadding = PaddingValues(horizontal = 4.dp, vertical = 6.dp)
                 ) {
-                    Text("Restaurar", fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                    Text("Restaurar", fontSize = 13.sp, fontWeight = FontWeight.Bold)
                 }
             }
 
@@ -4075,6 +4327,1064 @@ fun MarginAdjusterItem(
                 modifier = Modifier.size(32.dp)
             ) {
                 Icon(Icons.Default.Add, contentDescription = "Incrementar", modifier = Modifier.size(16.dp))
+            }
+        }
+    }
+}
+
+@Composable
+fun EditableBlockCard(
+    label: String,
+    text: String,
+    isEditing: Boolean,
+    onEditStart: () -> Unit,
+    onEditCancel: () -> Unit,
+    onSave: (String) -> Unit,
+    testTagPrefix: String
+) {
+    var tempText by remember(text) { mutableStateOf(text) }
+
+    Card(
+        colors = CardDefaults.cardColors(
+            containerColor = if (isEditing) MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.3f) else Color(0xFFFBF7FB)
+        ),
+        shape = RoundedCornerShape(12.dp),
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(vertical = 4.dp)
+            .border(
+                width = if (isEditing) 1.5.dp else 1.dp,
+                color = if (isEditing) MaterialTheme.colorScheme.primary else Color(0xFFE2DCE5),
+                shape = RoundedCornerShape(12.dp)
+            )
+            .testTag("${testTagPrefix}_card")
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(12.dp)
+        ) {
+            // Label & Actions Header
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    text = label,
+                    style = MaterialTheme.typography.labelMedium,
+                    fontWeight = FontWeight.Bold,
+                    color = if (isEditing) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant
+                )
+
+                if (!isEditing) {
+                    IconButton(
+                        onClick = onEditStart,
+                        modifier = Modifier.size(24.dp).testTag("${testTagPrefix}_edit_btn")
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Edit,
+                            contentDescription = "Editar bloque",
+                            tint = MaterialTheme.colorScheme.primary,
+                            modifier = Modifier.size(16.dp)
+                        )
+                    }
+                } else {
+                    Row(
+                        horizontalArrangement = Arrangement.spacedBy(4.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        IconButton(
+                            onClick = onEditCancel,
+                            modifier = Modifier.size(24.dp).testTag("${testTagPrefix}_cancel_btn")
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.Close,
+                                contentDescription = "Cancelar cambios",
+                                tint = MaterialTheme.colorScheme.error,
+                                modifier = Modifier.size(16.dp)
+                            )
+                        }
+                        IconButton(
+                            onClick = { onSave(tempText) },
+                            modifier = Modifier.size(24.dp).testTag("${testTagPrefix}_save_btn")
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.Check,
+                                contentDescription = "Guardar cambios",
+                                tint = Color(0xFF16A34A),
+                                modifier = Modifier.size(16.dp)
+                            )
+                        }
+                    }
+                }
+            }
+
+            Spacer(modifier = Modifier.height(6.dp))
+
+            if (isEditing) {
+                OutlinedTextField(
+                    value = tempText,
+                    onValueChange = { tempText = it },
+                    textStyle = MaterialTheme.typography.bodyMedium.copy(
+                        fontFamily = FontFamily.Serif
+                    ),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .testTag("${testTagPrefix}_input"),
+                    shape = RoundedCornerShape(8.dp),
+                    maxLines = 6,
+                    colors = OutlinedTextFieldDefaults.colors(
+                        focusedContainerColor = Color.White,
+                        unfocusedContainerColor = Color.White,
+                        disabledContainerColor = Color.White
+                    )
+                )
+            } else {
+                Text(
+                    text = text.ifEmpty { "[Vacío]" },
+                    style = MaterialTheme.typography.bodySmall.copy(
+                        fontStyle = if (text.isEmpty()) FontStyle.Italic else FontStyle.Normal
+                    ),
+                    fontFamily = FontFamily.Serif,
+                    maxLines = 3,
+                    overflow = TextOverflow.Ellipsis,
+                    color = MaterialTheme.colorScheme.onSurface
+                )
+            }
+        }
+    }
+}
+
+@Composable
+fun CssColumnFlowWorkspace(
+    rawText: String,
+    project: BookProject,
+    flowFontSizeSp: Float,
+    flowLineHeight: Float,
+    onFontSizeChange: (Float) -> Unit,
+    onLineHeightChange: (Float) -> Unit,
+    onUpdateProject: (BookProject) -> Unit,
+    onTextChanged: (String) -> Unit,
+    triggerPdfExport: Boolean,
+    onPdfExportedHandled: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    val context = androidx.compose.ui.platform.LocalContext.current
+    var selectedTabInAdjustments by remember { mutableStateOf(0) } // 0: Margins, 1: Typography, 2: Text Edits
+    val parsedSections = remember(rawText) {
+        BookTextParser.parseRawText(rawText)
+    }
+
+    var selectedSectionIndex by remember { mutableStateOf(0) }
+    var currentPageIndex by remember { mutableStateOf(0) }
+    var totalPageCount by remember { mutableStateOf(1) }
+
+    Row(
+        modifier = modifier.background(Color(0xFFF3EDF7))
+    ) {
+        // Adjustments Left Panel (width 320dp, styled like a professional publisher palette)
+        Card(
+            colors = CardDefaults.cardColors(
+                containerColor = Color(0xFFFDF8FD)
+            ),
+            shape = RoundedCornerShape(16.dp),
+            elevation = CardDefaults.cardElevation(defaultElevation = 4.dp),
+            modifier = Modifier
+                .width(320.dp)
+                .fillMaxHeight()
+                .padding(12.dp)
+                .border(1.dp, Color.White.copy(alpha = 0.5f), RoundedCornerShape(16.dp))
+        ) {
+            Column(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(16.dp)
+            ) {
+                Text(
+                    text = "Ajustes de Flujo CSS",
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.Bold,
+                    fontFamily = FontFamily.Serif,
+                    color = MaterialTheme.colorScheme.primary
+                )
+                Spacer(modifier = Modifier.height(4.dp))
+                Text(
+                    text = "Controla la maqueta del flujo continuo de texto, tipografía y contenido.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f)
+                )
+
+                Spacer(modifier = Modifier.height(16.dp))
+
+                // Adjustment Sub-Tabs
+                TabRow(
+                    selectedTabIndex = selectedTabInAdjustments,
+                    containerColor = Color.Transparent,
+                    contentColor = MaterialTheme.colorScheme.primary,
+                    modifier = Modifier.fillMaxWidth().testTag("flow_sub_tabs")
+                ) {
+                    Tab(
+                        selected = selectedTabInAdjustments == 0,
+                        onClick = { selectedTabInAdjustments = 0 },
+                        text = { Text("Márgenes", fontSize = 11.sp, fontWeight = FontWeight.Bold) },
+                        modifier = Modifier.testTag("subtab_margins")
+                    )
+                    Tab(
+                        selected = selectedTabInAdjustments == 1,
+                        onClick = { selectedTabInAdjustments = 1 },
+                        text = { Text("Tipo", fontSize = 11.sp, fontWeight = FontWeight.Bold) },
+                        modifier = Modifier.testTag("subtab_typography")
+                    )
+                    Tab(
+                        selected = selectedTabInAdjustments == 2,
+                        onClick = { selectedTabInAdjustments = 2 },
+                        text = { Text("Texto", fontSize = 11.sp, fontWeight = FontWeight.Bold) },
+                        modifier = Modifier.testTag("subtab_blocks_editor")
+                    )
+                }
+
+                Spacer(modifier = Modifier.height(16.dp))
+
+                if (selectedTabInAdjustments == 0) {
+                    // Margin Slider Adjustments (mm)
+                    Column(
+                        modifier = Modifier
+                            .weight(1f)
+                            .verticalScroll(rememberScrollState()),
+                        verticalArrangement = Arrangement.spacedBy(16.dp)
+                    ) {
+                        Column {
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Text("Margen Superior", style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.SemiBold)
+                                Text("${project.marginMmTop.toInt()} mm", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.primary)
+                            }
+                            Slider(
+                                value = project.marginMmTop,
+                                onValueChange = { onUpdateProject(project.copy(marginMmTop = it)) },
+                                valueRange = 5f..50f,
+                                steps = 45,
+                                modifier = Modifier.testTag("slider_margin_top")
+                            )
+                        }
+
+                        Column {
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Text("Margen Inferior", style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.SemiBold)
+                                Text("${project.marginMmBottom.toInt()} mm", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.primary)
+                            }
+                            Slider(
+                                value = project.marginMmBottom,
+                                onValueChange = { onUpdateProject(project.copy(marginMmBottom = it)) },
+                                valueRange = 5f..50f,
+                                steps = 45,
+                                modifier = Modifier.testTag("slider_margin_bottom")
+                            )
+                        }
+
+                        Column {
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Text("Margen Izquierdo", style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.SemiBold)
+                                Text("${project.marginMmLeft.toInt()} mm", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.primary)
+                            }
+                            Slider(
+                                value = project.marginMmLeft,
+                                onValueChange = { onUpdateProject(project.copy(marginMmLeft = it)) },
+                                valueRange = 5f..40f,
+                                steps = 35,
+                                modifier = Modifier.testTag("slider_margin_left")
+                            )
+                        }
+
+                        Column {
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Text("Margen Derecho", style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.SemiBold)
+                                Text("${project.marginMmRight.toInt()} mm", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.primary)
+                            }
+                            Slider(
+                                value = project.marginMmRight,
+                                onValueChange = { onUpdateProject(project.copy(marginMmRight = it)) },
+                                valueRange = 5f..40f,
+                                steps = 35,
+                                modifier = Modifier.testTag("slider_margin_right")
+                            )
+                        }
+
+                        HorizontalDivider(
+                            color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f),
+                            modifier = Modifier.padding(vertical = 4.dp)
+                        )
+
+                        Text(
+                            "Relleno Interno del Contenedor",
+                            style = MaterialTheme.typography.bodyMedium,
+                            fontWeight = FontWeight.Bold,
+                            color = MaterialTheme.colorScheme.primary
+                        )
+
+                        Column {
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Text("Relleno Superior", style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.SemiBold)
+                                Text("${project.paddingMmTop.toInt()} mm", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.primary)
+                            }
+                            Slider(
+                                value = project.paddingMmTop,
+                                onValueChange = { onUpdateProject(project.copy(paddingMmTop = it)) },
+                                valueRange = 0f..40f,
+                                steps = 40,
+                                modifier = Modifier.testTag("slider_padding_top")
+                            )
+                        }
+
+                        Column {
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Text("Relleno Inferior", style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.SemiBold)
+                                Text("${project.paddingMmBottom.toInt()} mm", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.primary)
+                            }
+                            Slider(
+                                value = project.paddingMmBottom,
+                                onValueChange = { onUpdateProject(project.copy(paddingMmBottom = it)) },
+                                valueRange = 0f..40f,
+                                steps = 40,
+                                modifier = Modifier.testTag("slider_padding_bottom")
+                            )
+                        }
+
+                        Column {
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Text("Relleno Izquierdo", style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.SemiBold)
+                                Text("${project.paddingMmLeft.toInt()} mm", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.primary)
+                            }
+                            Slider(
+                                value = project.paddingMmLeft,
+                                onValueChange = { onUpdateProject(project.copy(paddingMmLeft = it)) },
+                                valueRange = 0f..40f,
+                                steps = 40,
+                                modifier = Modifier.testTag("slider_padding_left")
+                            )
+                        }
+
+                        Column {
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Text("Relleno Derecho", style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.SemiBold)
+                                Text("${project.paddingMmRight.toInt()} mm", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.primary)
+                            }
+                            Slider(
+                                value = project.paddingMmRight,
+                                onValueChange = { onUpdateProject(project.copy(paddingMmRight = it)) },
+                                valueRange = 0f..40f,
+                                steps = 40,
+                                modifier = Modifier.testTag("slider_padding_right")
+                            )
+                        }
+                    }
+                } else if (selectedTabInAdjustments == 1) {
+                    // Typography adjustments
+                    Column(
+                        modifier = Modifier
+                            .weight(1f)
+                            .verticalScroll(rememberScrollState()),
+                        verticalArrangement = Arrangement.spacedBy(16.dp)
+                    ) {
+                        Column {
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Text("Tamaño Letra", style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.SemiBold)
+                                Text("${flowFontSizeSp.toInt()} sp", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.primary)
+                            }
+                            Slider(
+                                value = flowFontSizeSp,
+                                onValueChange = onFontSizeChange,
+                                valueRange = 10f..32f,
+                                steps = 22,
+                                modifier = Modifier.testTag("slider_flow_fontsize")
+                            )
+                        }
+
+                        Column {
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Text("Interlineado", style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.SemiBold)
+                                Text(String.format("%.1f", flowLineHeight), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.primary)
+                            }
+                            Slider(
+                                value = flowLineHeight,
+                                onValueChange = onLineHeightChange,
+                                valueRange = 1.1f..2.5f,
+                                steps = 14,
+                                modifier = Modifier.testTag("slider_flow_lineheight")
+                            )
+                        }
+
+                        // Informational box about CSS layout pagination rules
+                        Card(
+                            colors = CardDefaults.cardColors(
+                                containerColor = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.5f)
+                            ),
+                            shape = RoundedCornerShape(8.dp),
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Column(modifier = Modifier.padding(12.dp)) {
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    Icon(
+                                        imageVector = Icons.Default.Info,
+                                        contentDescription = null,
+                                        tint = MaterialTheme.colorScheme.secondary,
+                                        modifier = Modifier.size(16.dp)
+                                    )
+                                    Spacer(modifier = Modifier.width(6.dp))
+                                    Text(
+                                        text = "Uso de Columnas CSS",
+                                        style = MaterialTheme.typography.labelMedium,
+                                        fontWeight = FontWeight.Bold,
+                                        color = MaterialTheme.colorScheme.onSecondaryContainer
+                                    )
+                                }
+                                Spacer(modifier = Modifier.height(6.dp))
+                                Text(
+                                    text = "El texto fluye automáticamente en columnas horizontales. Cada columna funciona como una página dinámica. Arrastra horizontalmente el visor para simular el hojeado de un libro real.",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSecondaryContainer.copy(alpha = 0.8f),
+                                    lineHeight = 1.35.sp
+                                )
+                            }
+                        }
+                    }
+                } else {
+                    // TAB 2: Text blocks selectable & editable list
+                    Column(
+                        modifier = Modifier
+                            .weight(1f)
+                            .fillMaxWidth(),
+                        verticalArrangement = Arrangement.spacedBy(10.dp)
+                    ) {
+                        if (parsedSections.isEmpty()) {
+                            Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                                Text("Sin texto cargado.", color = MaterialTheme.colorScheme.outline)
+                            }
+                        } else {
+                            val activeSectionIndex = selectedSectionIndex.coerceIn(0, parsedSections.size - 1)
+                            val activeSection = parsedSections[activeSectionIndex]
+
+                            // Dropdown Section Selector
+                            var expandedDropdown by remember { mutableStateOf(false) }
+                            Box(modifier = Modifier.fillMaxWidth()) {
+                                OutlinedButton(
+                                    onClick = { expandedDropdown = true },
+                                    modifier = Modifier.fillMaxWidth().testTag("btn_select_section"),
+                                    shape = RoundedCornerShape(10.dp)
+                                ) {
+                                    Row(
+                                        modifier = Modifier.fillMaxWidth(),
+                                        horizontalArrangement = Arrangement.SpaceBetween,
+                                        verticalAlignment = Alignment.CenterVertically
+                                    ) {
+                                        Text(
+                                            text = activeSection.title,
+                                            style = MaterialTheme.typography.bodyMedium,
+                                            fontWeight = FontWeight.Bold,
+                                            maxLines = 1,
+                                            overflow = TextOverflow.Ellipsis,
+                                            modifier = Modifier.weight(1f)
+                                        )
+                                        Icon(
+                                            imageVector = Icons.Default.ArrowDropDown,
+                                            contentDescription = "Expandir selección de sección"
+                                        )
+                                    }
+                                }
+                                DropdownMenu(
+                                    expanded = expandedDropdown,
+                                    onDismissRequest = { expandedDropdown = false },
+                                    modifier = Modifier.width(280.dp).testTag("dropdown_sections")
+                                ) {
+                                    parsedSections.forEachIndexed { idx, sec ->
+                                        DropdownMenuItem(
+                                            text = {
+                                                Text(
+                                                    text = sec.title,
+                                                    style = MaterialTheme.typography.bodyMedium,
+                                                    maxLines = 1,
+                                                    overflow = TextOverflow.Ellipsis
+                                                )
+                                            },
+                                            onClick = {
+                                                selectedSectionIndex = idx
+                                                expandedDropdown = false
+                                            },
+                                            modifier = Modifier.testTag("menu_item_section_$idx")
+                                        )
+                                    }
+                                }
+                            }
+
+                            Spacer(modifier = Modifier.height(4.dp))
+
+                            // Scrollable list of paragraph blocks in that section
+                            Box(modifier = Modifier.weight(1f).fillMaxWidth()) {
+                                Column(
+                                    modifier = Modifier
+                                        .fillMaxSize()
+                                        .verticalScroll(rememberScrollState()),
+                                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                                ) {
+                                    // Title Block Card
+                                    var editingTitle by remember(activeSectionIndex, activeSection.title) { mutableStateOf(false) }
+                                    EditableBlockCard(
+                                        label = "Título de Sección",
+                                        text = activeSection.title,
+                                        isEditing = editingTitle,
+                                        onEditStart = { editingTitle = true },
+                                        onEditCancel = { editingTitle = false },
+                                        onSave = { updatedVal ->
+                                            editingTitle = false
+                                            val updatedSections = parsedSections.toMutableList().apply {
+                                                set(activeSectionIndex, activeSection.copy(title = updatedVal))
+                                            }
+                                            onTextChanged(BookTextParser.unparseRawText(updatedSections))
+                                        },
+                                        testTagPrefix = "block_title"
+                                    )
+
+                                    // Subtitle Block Card (if exists, or option to edit/add)
+                                    val subtitleText = activeSection.subtitle ?: ""
+                                    var editingSubtitle by remember(activeSectionIndex, subtitleText) { mutableStateOf(false) }
+                                    EditableBlockCard(
+                                        label = "Subtítulo de Sección",
+                                        text = subtitleText,
+                                        isEditing = editingSubtitle,
+                                        onEditStart = { editingSubtitle = true },
+                                        onEditCancel = { editingSubtitle = false },
+                                        onSave = { updatedVal ->
+                                            editingSubtitle = false
+                                            val updatedSections = parsedSections.toMutableList().apply {
+                                                set(activeSectionIndex, activeSection.copy(subtitle = updatedVal.ifEmpty { null }))
+                                            }
+                                            onTextChanged(BookTextParser.unparseRawText(updatedSections))
+                                        },
+                                        testTagPrefix = "block_subtitle"
+                                    )
+
+                                    // Paragraphs
+                                    activeSection.paragraphs.forEachIndexed { pIdx, para ->
+                                        var editingPara by remember(activeSectionIndex, pIdx, para) { mutableStateOf(false) }
+                                        EditableBlockCard(
+                                            label = "Párrafo ${pIdx + 1}",
+                                            text = para,
+                                            isEditing = editingPara,
+                                            onEditStart = { editingPara = true },
+                                            onEditCancel = { editingPara = false },
+                                            onSave = { updatedVal ->
+                                                editingPara = false
+                                                val updatedSections = parsedSections.toMutableList().apply {
+                                                    val updatedParas = activeSection.paragraphs.toMutableList().apply {
+                                                        set(pIdx, updatedVal)
+                                                    }
+                                                    set(activeSectionIndex, activeSection.copy(paragraphs = updatedParas))
+                                                }
+                                                onTextChanged(BookTextParser.unparseRawText(updatedSections))
+                                            },
+                                            testTagPrefix = "block_para_$pIdx"
+                                        )
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // Preview Area (displays WebView loading parsed book with custom generated styles)
+        Card(
+            colors = CardDefaults.cardColors(
+                containerColor = Color.White
+            ),
+            shape = RoundedCornerShape(16.dp),
+            elevation = CardDefaults.cardElevation(defaultElevation = 6.dp),
+            modifier = Modifier
+                .weight(1f)
+                .fillMaxHeight()
+                .padding(top = 12.dp, bottom = 12.dp, end = 12.dp)
+                .border(1.dp, Color(0xFFE2E8F0), RoundedCornerShape(16.dp))
+        ) {
+            Column(
+                modifier = Modifier.fillMaxSize()
+            ) {
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .weight(1f),
+                    contentAlignment = Alignment.Center
+                ) {
+                    if (rawText.isEmpty()) {
+                        Column(
+                            horizontalAlignment = Alignment.CenterHorizontally,
+                            modifier = Modifier.padding(32.dp)
+                        ) {
+                            CircularProgressIndicator()
+                            Spacer(modifier = Modifier.height(16.dp))
+                            Text(
+                                text = "Importando y maquetando texto...",
+                                style = MaterialTheme.typography.titleMedium,
+                                fontWeight = FontWeight.Bold,
+                                color = MaterialTheme.colorScheme.outline
+                            )
+                        }
+                    } else {
+                        // Render HTML in the WebView
+                        CssColumnFlowWebView(
+                            rawText = rawText,
+                            project = project,
+                            fontSizeSp = flowFontSizeSp,
+                            lineHeight = flowLineHeight,
+                            currentPageIndex = currentPageIndex,
+                            onPageCountUpdated = { totalPageCount = it },
+                            onCurrentPageChanged = { currentPageIndex = it },
+                            triggerPdfExport = triggerPdfExport,
+                            onPdfExportedHandled = onPdfExportedHandled,
+                            onPdfDataReceived = { base64, title ->
+                                PdfExporter.saveAndSharePdf(context, base64, title)
+                            },
+                            modifier = Modifier.fillMaxSize()
+                        )
+                    }
+                }
+
+                // NAVIGATION BAR FOR PAGINATION (Previous Page & Next Page)
+                if (rawText.isNotEmpty() && totalPageCount > 1) {
+                    Surface(
+                        color = Color(0xFFFDF8FD),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .border(width = (0.5).dp, color = Color(0xFFE2DCE5))
+                            .testTag("flow_pagination_bar")
+                    ) {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(56.dp)
+                                .padding(horizontal = 16.dp),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            // Previous Page Button
+                            FilledTonalButton(
+                                onClick = {
+                                    if (currentPageIndex > 0) {
+                                        currentPageIndex--
+                                    }
+                                },
+                                enabled = currentPageIndex > 0,
+                                shape = RoundedCornerShape(12.dp),
+                                colors = ButtonDefaults.filledTonalButtonColors(
+                                    containerColor = Color(0xFFF1ECE4), // matching paper color tones
+                                    contentColor = MaterialTheme.colorScheme.primary
+                                ),
+                                modifier = Modifier.testTag("btn_prev_page")
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.ChevronLeft,
+                                    contentDescription = "Página Anterior",
+                                    modifier = Modifier.size(18.dp)
+                                )
+                                Spacer(modifier = Modifier.width(4.dp))
+                                Text("Anterior", style = MaterialTheme.typography.bodySmall, fontWeight = FontWeight.Bold)
+                            }
+
+                            // Dynamic elegant Page Indicator Counter
+                            Card(
+                                colors = CardDefaults.cardColors(
+                                    containerColor = Color(0xFFFAF7F2)
+                                ),
+                                shape = RoundedCornerShape(8.dp),
+                                modifier = Modifier
+                                    .padding(horizontal = 8.dp)
+                                    .border(1.dp, Color(0xFFC4B29E).copy(alpha = 0.5f), RoundedCornerShape(8.dp))
+                            ) {
+                                Row(
+                                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Default.Book,
+                                        contentDescription = null,
+                                        tint = Color(0xFFC4B29E),
+                                        modifier = Modifier.size(16.dp)
+                                    )
+                                    Spacer(modifier = Modifier.width(6.dp))
+                                    Text(
+                                        text = "PÁG. ${currentPageIndex + 1} de $totalPageCount",
+                                        style = MaterialTheme.typography.labelMedium.copy(
+                                            fontFamily = FontFamily.Monospace,
+                                            fontWeight = FontWeight.Bold,
+                                            color = MaterialTheme.colorScheme.primary
+                                        ),
+                                        modifier = Modifier.testTag("text_page_indicator")
+                                    )
+                                }
+                            }
+
+                            // Next Page Button
+                            FilledTonalButton(
+                                onClick = {
+                                    if (currentPageIndex < totalPageCount - 1) {
+                                        currentPageIndex++
+                                    }
+                                },
+                                enabled = currentPageIndex < totalPageCount - 1,
+                                shape = RoundedCornerShape(12.dp),
+                                colors = ButtonDefaults.filledTonalButtonColors(
+                                    containerColor = Color(0xFFF1ECE4),
+                                    contentColor = MaterialTheme.colorScheme.primary
+                                ),
+                                modifier = Modifier.testTag("btn_next_page")
+                            ) {
+                                Text("Siguiente", style = MaterialTheme.typography.bodySmall, fontWeight = FontWeight.Bold)
+                                Spacer(modifier = Modifier.width(4.dp))
+                                Icon(
+                                    imageVector = Icons.Default.ChevronRight,
+                                    contentDescription = "Página Siguiente",
+                                    modifier = Modifier.size(18.dp)
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+fun CssColumnFlowWebView(
+    rawText: String,
+    project: BookProject,
+    fontSizeSp: Float,
+    lineHeight: Float,
+    currentPageIndex: Int,
+    onPageCountUpdated: (Int) -> Unit,
+    onCurrentPageChanged: (Int) -> Unit,
+    triggerPdfExport: Boolean,
+    onPdfExportedHandled: () -> Unit,
+    onPdfDataReceived: (String, String) -> Unit,
+    modifier: Modifier = Modifier
+) {
+    val scope = rememberCoroutineScope()
+    val parsedSections = remember(rawText) {
+        BookTextParser.parseRawText(rawText)
+    }
+
+    val htmlContent = remember(
+        parsedSections,
+        project.marginMmLeft,
+        project.marginMmRight,
+        project.marginMmTop,
+        project.marginMmBottom,
+        project.paddingMmTop,
+        project.paddingMmBottom,
+        project.paddingMmLeft,
+        project.paddingMmRight,
+        fontSizeSp,
+        lineHeight
+    ) {
+        val calculatedColWidthMm = (project.pageWidthMm - project.marginMmLeft - project.marginMmRight).coerceAtLeast(40f)
+        val calculatedGapMm = (project.marginMmLeft + project.marginMmRight).coerceAtLeast(10f)
+        
+        BookTextParser.generateHtml(
+            sections = parsedSections,
+            marginTopMm = project.marginMmTop,
+            marginBottomMm = project.marginMmBottom,
+            marginLeftMm = project.marginMmLeft,
+            marginRightMm = project.marginMmRight,
+            columnWidthMm = calculatedColWidthMm,
+            columnGapMm = calculatedGapMm,
+            fontSizeSp = fontSizeSp,
+            lineHeight = lineHeight,
+            paddingTopMm = project.paddingMmTop,
+            paddingBottomMm = project.paddingMmBottom,
+            paddingLeftMm = project.paddingMmLeft,
+            paddingRightMm = project.paddingMmRight,
+            pageWidthMm = project.pageWidthMm,
+            pageHeightMm = project.pageHeightMm,
+            showPageNumbers = project.showPageNumbers,
+            pageNumbersStartAtPage = project.pageNumbersStartAtPage,
+            pageNumbersStartFromValue = project.pageNumbersStartFromValue,
+            title = project.title
+        )
+    }
+
+    AndroidView(
+        factory = { ctx ->
+            WebView(ctx).apply {
+                settings.javaScriptEnabled = true
+                settings.domStorageEnabled = true
+                settings.useWideViewPort = true
+                settings.loadWithOverviewMode = true
+                webViewClient = WebViewClient()
+                
+                addJavascriptInterface(
+                    BookScrollBridge(scope, onPageCountUpdated, onCurrentPageChanged, onPdfDataReceived),
+                    "AndroidFlowPageCounter"
+                )
+            }
+        },
+        update = { webView ->
+            val tag = webView.tag as? String
+            if (tag != htmlContent) {
+                webView.loadDataWithBaseURL(null, htmlContent, "text/html", "UTF-8", null)
+                webView.tag = htmlContent
+            }
+            
+            // Invoke the scrolling function on layout sync/update
+            webView.evaluateJavascript("scrollToPage($currentPageIndex)", null)
+
+            if (triggerPdfExport) {
+                webView.evaluateJavascript("generateAndExportPdf()", null)
+                onPdfExportedHandled()
+            }
+        },
+        modifier = modifier.testTag("css_flow_webview")
+    )
+}
+
+class BookScrollBridge(
+    private val scope: kotlinx.coroutines.CoroutineScope,
+    private val onPageCountUpdated: (Int) -> Unit,
+    private val onCurrentPageChanged: (Int) -> Unit,
+    private val onPdfExported: (String, String) -> Unit
+) {
+    @android.webkit.JavascriptInterface
+    fun sendLayoutMetrics(pages: Int, current: Int) {
+        scope.launch {
+            onPageCountUpdated(pages)
+            onCurrentPageChanged(current)
+        }
+    }
+
+    @android.webkit.JavascriptInterface
+    fun onPdfGenerated(base64Data: String, title: String) {
+        scope.launch {
+            onPdfExported(base64Data, title)
+        }
+    }
+}
+
+@Composable
+fun QrTransferDialog(
+    fileName: String,
+    isLoading: Boolean,
+    downloadUrl: String?,
+    error: String?,
+    onDismiss: () -> Unit,
+    onRetry: () -> Unit
+) {
+    androidx.compose.ui.window.Dialog(onDismissRequest = onDismiss) {
+        androidx.compose.material3.Surface(
+            shape = RoundedCornerShape(24.dp),
+            tonalElevation = 6.dp,
+            color = MaterialTheme.colorScheme.surface,
+            modifier = Modifier.padding(16.dp).fillMaxWidth()
+        ) {
+            Column(
+                modifier = Modifier
+                    .padding(24.dp)
+                    .fillMaxWidth(),
+                horizontalAlignment = Alignment.CenterHorizontally
+            ) {
+                // Header with Tablet and Cloud Link icon
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    modifier = Modifier.padding(bottom = 16.dp)
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.TabletAndroid,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier.size(28.dp)
+                    )
+                    Text(
+                        text = "Transferir a tu Tablet",
+                        style = MaterialTheme.typography.titleLarge,
+                        fontWeight = FontWeight.Bold,
+                        color = MaterialTheme.colorScheme.onSurface
+                    )
+                }
+
+                // Friendly explanation in Spanish
+                Text(
+                    text = "El emulador web es seguro pero es un equipo virtual limpio sin tus cuentas. Para evitar abrir tu sesión de Drive o Gmail en un navegador web compartido, hemos subido tu archivo temporalmente. ¡Solo escanea el código con la cámara de tu tableta para descargarlo al instante!",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    textAlign = TextAlign.Center,
+                    modifier = Modifier.padding(bottom = 20.dp)
+                )
+
+                // Separator
+                androidx.compose.material3.HorizontalDivider(
+                    modifier = Modifier.padding(bottom = 20.dp),
+                    color = MaterialTheme.colorScheme.outlineVariant
+                )
+
+                // Content area
+                if (isLoading) {
+                    Column(
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        modifier = Modifier.padding(vertical = 16.dp)
+                    ) {
+                        CircularProgressIndicator(
+                            color = MaterialTheme.colorScheme.primary,
+                            modifier = Modifier.size(48.dp)
+                        )
+                        Spacer(modifier = Modifier.height(16.dp))
+                        Text(
+                            text = "Generando PDF de maqueta y subiendo...",
+                            style = MaterialTheme.typography.bodyMedium,
+                            fontWeight = FontWeight.Medium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                } else if (error != null) {
+                    Column(
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        modifier = Modifier.padding(vertical = 16.dp)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Error,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.error,
+                            modifier = Modifier.size(48.dp)
+                        )
+                        Spacer(modifier = Modifier.height(12.dp))
+                        Text(
+                            text = error,
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.error,
+                            textAlign = TextAlign.Center
+                        )
+                        Spacer(modifier = Modifier.height(16.dp))
+                        Button(
+                            onClick = onRetry,
+                            colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error)
+                        ) {
+                            Text("Reintentar")
+                        }
+                    }
+                } else if (downloadUrl != null) {
+                    Column(
+                        horizontalAlignment = Alignment.CenterHorizontally
+                    ) {
+                        // File name badge
+                        androidx.compose.material3.Surface(
+                            color = MaterialTheme.colorScheme.secondaryContainer,
+                            shape = RoundedCornerShape(8.dp),
+                            modifier = Modifier.padding(bottom = 16.dp)
+                        ) {
+                            Text(
+                                text = "Archivo: $fileName",
+                                style = MaterialTheme.typography.bodySmall,
+                                fontWeight = FontWeight.Bold,
+                                color = MaterialTheme.colorScheme.onSecondaryContainer,
+                                modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp)
+                            )
+                        }
+
+                        // QR Code Image
+                        val encodedUrl = java.net.URLEncoder.encode(downloadUrl, "UTF-8")
+                        val qrCodeApiUrl = "https://api.qrserver.com/v1/create-qr-code/?size=500x500&data=$encodedUrl"
+                        
+                        androidx.compose.material3.Surface(
+                            border = androidx.compose.foundation.BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
+                            shape = RoundedCornerShape(12.dp),
+                            color = Color(0xFFFFFFFF), // QR needs high-contrast background
+                            modifier = Modifier
+                                .size(200.dp)
+                                .padding(8.dp)
+                        ) {
+                            androidx.compose.foundation.Image(
+                                painter = coil.compose.rememberAsyncImagePainter(model = qrCodeApiUrl),
+                                contentDescription = "Scan to download",
+                                modifier = Modifier.fillMaxSize()
+                            )
+                        }
+
+                        Spacer(modifier = Modifier.height(12.dp))
+
+                        // Link Text
+                        Text(
+                            text = "Enlace de descarga:",
+                            style = MaterialTheme.typography.bodySmall,
+                            fontWeight = FontWeight.Bold,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                        
+                        Text(
+                            text = downloadUrl,
+                            style = MaterialTheme.typography.bodyMedium,
+                            fontWeight = FontWeight.Bold,
+                            color = MaterialTheme.colorScheme.primary,
+                            modifier = Modifier.padding(bottom = 8.dp),
+                            textAlign = TextAlign.Center
+                        )
+
+                        Text(
+                            text = "El archivo se eliminará de forma automática tras su descarga o pasadas 24 horas por privacidad.",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f),
+                            textAlign = TextAlign.Center,
+                            modifier = Modifier.padding(horizontal = 8.dp)
+                        )
+                    }
+                }
+
+                Spacer(modifier = Modifier.height(24.dp))
+
+                // Dismiss button
+                Button(
+                    onClick = onDismiss,
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Text("Entendido, cerrar")
+                }
             }
         }
     }

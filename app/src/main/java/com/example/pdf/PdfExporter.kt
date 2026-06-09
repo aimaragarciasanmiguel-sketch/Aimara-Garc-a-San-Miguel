@@ -324,6 +324,32 @@ object PdfExporter {
         }
     }
 
+    fun saveAndSharePdf(context: Context, base64Data: String, projectTitle: String): File? {
+        val bytes = try {
+            android.util.Base64.decode(base64Data, android.util.Base64.DEFAULT)
+        } catch (e: Exception) {
+            Toast.makeText(context, "Error al decodificar PDF: ${e.localizedMessage}", Toast.LENGTH_SHORT).show()
+            return null
+        }
+
+        val fileName = "${projectTitle.replace("\\s+".toRegex(), "_")}_Flow_Layout.pdf"
+        val outputFile = File(context.cacheDir, fileName)
+
+        return try {
+            outputFile.createNewFile()
+            val outputStream = FileOutputStream(outputFile)
+            outputStream.write(bytes)
+            outputStream.flush()
+            outputStream.close()
+
+            shareFile(context, outputFile)
+            outputFile
+        } catch (e: Exception) {
+            Toast.makeText(context, "Error al guardar PDF: ${e.localizedMessage}", Toast.LENGTH_SHORT).show()
+            null
+        }
+    }
+
     private fun shareFile(context: Context, file: File) {
         val fileUri: Uri = FileProvider.getUriForFile(
             context,

@@ -34,7 +34,11 @@ data class BookProject(
     val a5TextLimitEndPage: Int = 370,
     val a5TextLimitWidthMm: Float = 110f,
     val a5TextLimitLines: Int = 30,
-    val rulersEnabled: Boolean = true
+    val rulersEnabled: Boolean = true,
+    val paddingMmLeft: Float = 5f,
+    val paddingMmRight: Float = 5f,
+    val paddingMmTop: Float = 5f,
+    val paddingMmBottom: Float = 5f
 )
 
 @Entity(tableName = "pages")
